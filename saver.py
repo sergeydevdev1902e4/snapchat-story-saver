@@ -24,3 +24,11 @@ def load_history(archive_dir: Path) -> set:
         # if corrupted, we just overwrite and redownload
         return set()
 
+def save_history(archive_dir: Path, saved_ids: set):
+    history_file = archive_dir / ".saved_snaps.json"
+    try:
+        with open(history_file, "w", encoding="utf-8") as f:
+            json.dump(list(saved_ids), f, indent=2)
+    except OSError as e:
+        print(f"Warning: Could not save history file: {e}", file=sys.stderr)
+
