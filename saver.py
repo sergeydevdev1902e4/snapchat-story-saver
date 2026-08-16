@@ -32,3 +32,16 @@ def save_history(archive_dir: Path, saved_ids: set):
     except OSError as e:
         print(f"Warning: Could not save history file: {e}", file=sys.stderr)
 
+def downloadSnap(client: httpx.Client, url: str, dest_path: Path) -> bool:
+    """Download a single media file to the destination path."""
+    try:
+        response = client.get(url, follow_redirects=True)
+        if response.status_code != 200:
+            print(f"Failed to download {url}: HTTP {response.status_code}", file=sys.stderr)
+            return False
+        dest_path.write_bytes(response.content)
+        return True
+    except httpx.HTTPError as e:
+        print(f"Network error downloading {url}: {e}", file=sys.stderr)
+        return False
+
