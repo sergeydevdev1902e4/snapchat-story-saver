@@ -6,7 +6,7 @@ import httpx
 
 from snapchat_story_saver.extractor import fetch_story
 
-# TODO: handle custom output naming templates
+# TODO: add retry logic for chunk downloads, snapchat CDN sometimes flakes
 def get_archive_dir(base_dir: Path, username: str) -> Path:
     path = base_dir / username
     path.mkdir(parents=True, exist_ok=True)
@@ -21,7 +21,6 @@ def load_history(archive_dir: Path) -> set:
             data = json.load(f)
             return set(data)
     except (json.JSONDecodeError, OSError):
-        # if corrupted, we just overwrite and redownload
         return set()
 
 def save_history(archive_dir: Path, saved_ids: set):
@@ -32,18 +31,45 @@ def save_history(archive_dir: Path, saved_ids: set):
     except OSError as e:
         print(f"Warning: Could not save history file: {e}", file=sys.stderr)
 
-def downloadSnap(client: httpx.Client, url: str, dest_path: Path) -> bool:
-    """Download a single media file to the destination path."""
+def downloadSnap(client: httpx.Client, url: str, dest_path: Path) -> tuple[bool, str]:
+    """Download a single media file, streaming to a temp file to prevent partial write corruption."""
+    temp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
     try:
-        response = client.get(url, follow_redirects=True)
-        if response.status_code != 200:
-            print(f"Failed to download {url}: HTTP {response.status_code}", file=sys.stderr)
-            return False
-        dest_path.write_bytes(response.content)
-        return True
-    except httpx.HTTPError as e:
-        print(f"Network error downloading {url}: {e}", file=sys.stderr)
-        return False
+        # Snapchat content expires fast, keep short timeout here
+        with client.stream("GET", url, follow_redirects=True) as response:
+            if response.status_code != 200:
+                print(f"Failed to download: HTTP {response.status_code}", file=sys.stderr)
+                return False, ""
+
+            # Guess clean extension if we don't have a reliable type
+            content_type = response.headers.get("content-type", "")
+            ext = "mp4"
+            if "image/jpeg" in content_type:
+                ext = "jpg"
+            elif "image/webp" in content_type:
+                ext = "webp"
+            elif "video/webm" in content_type:
+                ext = "webm"
+
+            real_dest = dest_path.with_suffix(f".{ext}")
+
+            with open(temp_path, "wb") as f:
+                for chunk in response.iter_bytes(chunk_size=8192):
+                    f.write(chunk)
+
+        if temp_path.exists():
+            if real_dest.exists():
+                real_dest.unlink()
+            temp_path.rename(real_dest)
+            return True, ext
+    except (httpx.HTTPError, OSError) as e:
+        print(f"Network or writing error: {e}", file=sys.stderr)
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+    return False, ""
 
 def main():
     parser = argparse.ArgumentParser(
@@ -81,11 +107,11 @@ def main():
     print(f"Found {len(snaps)} active snaps. Checking for new media...")
 
     new_snaps_count = 0
-    with httpx.Client(timeout=10.0) as client:
+    with httpx.Client(timeout=15.0) as client:
         for snap in snaps:
             snap_id = snap.get("id")
             url = snap.get("url")
-            media_type = snap.get("type", "mp4")
+            media_type = snap.get("type", "video")
 
             if not snap_id or not url:
                 continue
@@ -94,12 +120,13 @@ def main():
                 # print(f"DEBUG: {snap_id} already saved, skipping")
                 continue
 
-            ext = "jpg" if media_type == "image" else "mp4"
-            filename = f"{args.username}_{snap_id}.{ext}"
-            dest = archive_dir / filename
+            # Temporary initial name, will resolve to correct ext on download stream
+            initial_ext = "jpg" if media_type == "image" else "mp4"
+            placeholder_dest = archive_dir / f"{args.username}_{snap_id}.{initial_ext}"
 
-            print(f"Downloading {filename}...")
-            if downloadSnap(client, url, dest):
+            print(f"Downloading {snap_id}...")
+            success, final_ext = downloadSnap(client, url, placeholder_dest)
+            if success:
                 history.add(snap_id)
                 new_snaps_count += 1
 
