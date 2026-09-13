@@ -36,3 +36,5 @@ If you want more detailed output during extraction:
 ```bash
 python saver.py snapchat_username --verbose
 ```
+
+<!-- refreshed: 2026-09-13 -->
