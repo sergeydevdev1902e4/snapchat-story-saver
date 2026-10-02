@@ -37,4 +37,4 @@ If you want more detailed output during extraction:
 python saver.py snapchat_username --verbose
 ```
 
-<!-- refreshed: 2026-10-01 -->
+<!-- refreshed: 2026-10-02 -->
